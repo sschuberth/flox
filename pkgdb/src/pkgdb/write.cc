@@ -225,16 +225,35 @@ PkgDb::connect()
    * It could be the case that this database hasn't been initialized yet, so we
    * can't write to an existing table. Instead we just write to a dummy table.
    * It's unclear whether setting a pragma value like `appliation_id` counts as
-   * a write, so we create a table instead.*/
-  static const char * acquire_lock = R"SQL(
-  BEGIN EXCLUSIVE TRANSACTION;
-  CREATE TABLE IF NOT EXISTS _lock (foo int);
+   * a write, so we create a table instead.
+   *
+   * Also note that the PRAGMA statement needs to be in its own command,
+   * otherwise the subsequent commands _will not be run_.
+   * */
+  static const char * setLockingMode = R"SQL(
+  PRAGMA locking_mode = exclusive;
+  )SQL";
+  static const char * performWrite   = R"SQL(
+  BEGIN EXCLUSIVE          TRANSACTION;
+  CREATE TABLE IF NOT EXISTS _lock( foo INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    bar                     INTEGER );
+  INSERT INTO                _lock( bar ) VALUES( 420 );
   COMMIT TRANSACTION
   )SQL";
-  this->db.connect( this->dbPath.string().c_str(),
-                    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE );
-  sqlite3pp::command cmd( this->db, acquire_lock );
-  RETRY_WHILE_BUSY( cmd.execute_all() );
+  int                 connect_rcode
+    = this->db.connect( this->dbPath.string().c_str(),
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE );
+  if ( isSQLError( connect_rcode ) )
+    {
+      throw PkgDbException( "couldn't open r/w connection to the database" );
+    }
+  sqlite3pp::command cmd( this->db, setLockingMode );
+  int                rcode = cmd.execute();
+  debugLog( "pragma return code: " + std::to_string( rcode ) );
+  sqlite3pp::command write( this->db, performWrite );
+  RETRY_WHILE_BUSY( write.execute_all() );
+  auto msg = this->db.error_msg();
+  debugLog( "locking write err msg: " + std::string( msg ) );
 }
 
 
