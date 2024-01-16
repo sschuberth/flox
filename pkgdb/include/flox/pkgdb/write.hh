@@ -67,8 +67,7 @@ public:
         throw PkgDbReadOnly::NoSuchDatabase(
           *dynamic_cast<PkgDbReadOnly *>( this ) );
       }
-    this->db.connect( this->dbPath.c_str(),
-                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE );
+    this->connect();
     this->init();
     this->loadLockedFlake();
   }
@@ -89,8 +88,7 @@ public:
         throw PkgDbReadOnly::NoSuchDatabase(
           *dynamic_cast<PkgDbReadOnly *>( this ) );
       }
-    this->db.connect( this->dbPath.c_str(),
-                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE );
+    this->connect();
     this->init();
     this->loadLockedFlake();
   }
