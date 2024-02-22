@@ -214,6 +214,7 @@ extractAttrPath( nix::EvalState &       state,
 static std::vector<std::pair<std::string, resolver::LockedPackageRaw>>
 getLockedPackages( resolver::Lockfile & lockfile, const System & system )
 {
+  traceLog( "creating FloxEnv" );
   auto packages = lockfile.getLockfileRaw().packages.find( system );
   if ( packages == lockfile.getLockfileRaw().packages.end() )
     {
@@ -285,6 +286,8 @@ getRealisedPackages( nix::EvalState &                        state,
   auto output = extractAttrPath( state, *vFlake, package.attrPath );
 
   /* Interpret output as derivation. */
+  debugLog( nix::fmt( "getting derivation for %s",
+                      packageFlake.flake.lockedRef.to_string() ) );
   auto package_drv = getDerivation( state, *output.value, false );
 
   if ( ! package_drv.has_value() )
@@ -293,6 +296,7 @@ getRealisedPackages( nix::EvalState &                        state,
                                 + nlohmann::json( package ).dump() + "'" );
     }
 
+  debugLog( "getting store path for derivation" );
   auto broken = package_drv->queryMetaBool( "broken", false );
   if ( broken && ! allows.broken.value_or( false ) )
     {
@@ -321,6 +325,7 @@ getRealisedPackages( nix::EvalState &                        state,
   try
     {
       packagePath = state.store->printStorePath( package_drv->queryOutPath() );
+      debugLog( nix::fmt( "found store path: path=%s", packagePath ) );
     }
   catch ( const nix::Error & e )
     {
