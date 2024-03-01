@@ -70,8 +70,8 @@ setup_file() {
   assert_output --partial "'hello' is marked as unfree"
 }
 
-# bats test_tags=unfree,unfree:success
-@test "Environment with unfree packages succeeds if allwed in options" {
+# bats test_tags=unfree,unfree:success,special
+@test "Environment with unfree packages succeeds if allowed in options" {
   run "$PKGDB_BIN" buildenv "$LOCKFILES/unfree-allowed/manifest.lock"
   assert_success
 }

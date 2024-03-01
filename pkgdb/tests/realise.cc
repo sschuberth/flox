@@ -54,8 +54,12 @@ test_tryEvalPathReturnsValidOutpath( nix::ref<nix::EvalState> & state,
 {
   auto pkg    = "ripgrep";
   auto cursor = cursorForPackageName( state, system, pkg );
-  auto path
-    = flox::buildenv::tryEvalPath( state, pkg, system, cursor, "outPath" );
+  auto path   = flox::buildenv::tryEvalPath( state,
+                                           pkg,
+                                           system,
+                                           cursor,
+                                           false,
+                                           "outPath" );
   return path.has_value();
 }
 
@@ -70,8 +74,12 @@ test_evalFailureForInsecurePackage( nix::ref<nix::EvalState> & state,
   auto cursor = cursorForPackageName( state, system, pkg );
   try
     {
-      auto path
-        = flox::buildenv::tryEvalPath( state, pkg, system, cursor, "outPath" );
+      auto path = flox::buildenv::tryEvalPath( state,
+                                               pkg,
+                                               system,
+                                               cursor,
+                                               false,
+                                               "outPath" );
       return false;
     }
   catch ( const flox::buildenv::PackageEvalFailure & )
@@ -96,8 +104,12 @@ test_unsupportedSystemExceptionForUnsupportedPackage(
   auto cursor = cursorForPackageName( state, system, pkg );
   try
     {
-      auto path
-        = flox::buildenv::tryEvalPath( state, pkg, system, cursor, "outPath" );
+      auto path = flox::buildenv::tryEvalPath( state,
+                                               pkg,
+                                               system,
+                                               cursor,
+                                               false,
+                                               "outPath" );
       return false;
     }
   catch ( const flox::buildenv::PackageUnsupportedSystem & )

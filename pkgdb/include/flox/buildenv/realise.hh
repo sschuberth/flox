@@ -199,6 +199,7 @@ tryEvalPath( nix::ref<nix::EvalState> &              state,
              const std::string &                     packageName,
              const std::string &                     system,
              nix::ref<nix::eval_cache::AttrCursor> & cursor,
+             const bool                              isUnfree,
              const std::string &                     attr );
 
 
@@ -264,8 +265,10 @@ collectRealisedPackages(
  * @param state A nix evaluator.
  * @param packageName The name of the package being evaluated.
  * @param allows The user-specific allow rules.
+ * @return Returns whether the package was unfree, as this has implications for
+ * whether the package is cached.
  */
-void
+bool
 ensurePackageIsAllowed( nix::ref<nix::EvalState> &              state,
                         nix::ref<nix::eval_cache::AttrCursor> & cursor,
                         const std::string &                     packageName,

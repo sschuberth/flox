@@ -361,13 +361,61 @@ getOutputsOutpaths( nix::ref<nix::EvalState> &              state,
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * @brief Tries to evaluate the path without using the eval cache. This is
+ * necessary for
+ */
+std::optional<std::string>
+tryEvalPathFullEval( nix::ref<nix::EvalState> &              state,
+                     const std::string &                     packageName,
+                     const std::string &                     system,
+                     nix::ref<nix::eval_cache::AttrCursor> & cursor,
+                     const std::string &                     attr )
+{
+  /* This does a full eval (i.e. doesn't use the cache) in a way that gives us a
+   * more specific error message. */
+  auto maybeCursor = maybeGetCursor( state, cursor, attr );
+  if ( maybeCursor == std::nullopt ) { return std::nullopt; }
+  try
+    {
+      /* Guaranteed to fail */
+      ( *maybeCursor )->forceValue();
+      return std::nullopt;  // just to make the compiler shut up
+    }
+  catch ( const nix::Error & e )
+    {
+      /* "not available on the requested hostPlatform" -> package isn't
+       * supported on this system */
+      if ( e.info().msg.str().find(
+             "is not available on the requested hostPlatform:" )
+           != std::string::npos )
+        {
+          throw PackageUnsupportedSystem(
+            nix::fmt( "package '%s' is not avatlable for this system ('%s')",
+                      packageName,
+                      system ),
+            nix::filterANSIEscapes( e.what(), true ) );
+        }
+      debugLog( "failed to get more information about eval failure" );
+      throw PackageEvalFailure(
+        nix::fmt( "package '%s' failed to evaluate ", packageName ),
+        e.info().msg.str() );
+    }
+}
+
 std::optional<std::string>
 tryEvalPath( nix::ref<nix::EvalState> &              state,
              const std::string &                     packageName,
              const std::string &                     system,
              nix::ref<nix::eval_cache::AttrCursor> & cursor,
+             const bool                              isUnfree,
              const std::string &                     attr )
 {
+  /* Unfree packages aren't cached, so we always have to do a full eval. */
+  if ( isUnfree )
+    {
+      return tryEvalPathFullEval( state, packageName, system, cursor, attr );
+    }
   /* Happy path: the attribute is cached */
   try
     {
@@ -405,35 +453,9 @@ tryEvalPath( nix::ref<nix::EvalState> &              state,
                                     e.info().msg.str() );
         }
     }
-  /* This does a full eval (i.e. doesn't use the cache) in a way that gives us a
-   * more specific error message. */
-  auto maybeCursor = maybeGetCursor( state, cursor, attr );
-  if ( maybeCursor == std::nullopt ) { return std::nullopt; }
-  try
-    {
-      /* Guaranteed to fail */
-      ( *maybeCursor )->forceValue();
-      return std::nullopt;  // just to make the compiler shut up
-    }
-  catch ( const nix::Error & e )
-    {
-      /* "not available on the requested hostPlatform" -> package isn't
-       * supported on this system */
-      if ( e.info().msg.str().find(
-             "is not available on the requested hostPlatform:" )
-           != std::string::npos )
-        {
-          throw PackageUnsupportedSystem(
-            nix::fmt( "package '%s' is not avatlable for this system ('%s')",
-                      packageName,
-                      system ),
-            nix::filterANSIEscapes( e.what(), true ) );
-        }
-      debugLog( "failed to get more information about eval failure" );
-      throw PackageEvalFailure(
-        nix::fmt( "package '%s' failed to evaluate ", packageName ),
-        e.info().msg.str() );
-    }
+  /* The method we use for full eval gives us more information the error
+   * messages. */
+  return tryEvalPathFullEval( state, packageName, system, cursor, attr );
 }
 
 
@@ -518,7 +540,7 @@ collectRealisedPackages(
 
 /* -------------------------------------------------------------------------- */
 
-void
+bool
 ensurePackageIsAllowed( nix::ref<nix::EvalState> &              state,
                         nix::ref<nix::eval_cache::AttrCursor> & cursor,
                         const std::string &                     packageName,
@@ -553,8 +575,12 @@ ensurePackageIsAllowed( nix::ref<nix::EvalState> &              state,
                 + std::to_string( defaultIsBroken ) );
       isBroken = defaultIsBroken;
     }
-  if ( isBroken && ! allows.broken.value_or( defaultIsBrokenAllowed ) )
+  auto brokenAllowed = allows.broken.value_or( defaultIsBrokenAllowed );
+  if ( isBroken && ! brokenAllowed )
     {
+      debugLog( "package is not allowed: is_broken="
+                + std::to_string( isBroken )
+                + ", broken_allowed=" + std::to_string( brokenAllowed ) );
       throw PackageEvalFailure(
         nix::fmt( "Package '%s' is marked as unfree.\n\n"
                   "Allow building unfree packages by setting "
@@ -591,16 +617,23 @@ ensurePackageIsAllowed( nix::ref<nix::EvalState> &              state,
       if ( e.info().msg.str().find( "has an unfree license" )
            != std::string::npos )
         {
+          debugLog( "throwing unfree exception" );
           throw unfreeException;
         }
       debugLog( "package had no 'unfree' attribute, using default: default="
                 + std::to_string( defaultisUnfree ) );
       isUnfree = defaultisUnfree;
     }
-  if ( isUnfree && ! allows.unfree.value_or( defaultIsUnfreeAllowed ) )
+  auto unfreeAllowed = allows.unfree.value_or( defaultIsUnfreeAllowed );
+  if ( isUnfree && ! unfreeAllowed )
     {
+      debugLog( "package is not allowed: is_unfree="
+                + std::to_string( isUnfree )
+                + ", unfree_allowed=" + std::to_string( unfreeAllowed ) );
       throw unfreeException;
     }
+
+  return isUnfree;
 }
 
 
@@ -620,7 +653,7 @@ getRealisedPackages2( nix::ref<nix::EvalState> &              state,
 
   /* Don't proceed if the package doesn't meet the "allow" criteria. This *must*
    * go before evaluating `outPath` in case the package isn't allowed.*/
-  ensurePackageIsAllowed( state, cursor, packageName, allows );
+  auto isUnfree = ensurePackageIsAllowed( state, cursor, packageName, allows );
 
   /* Try to eval the outPath. Trying this eval tells us whether the package is
    * unsupported. This eval will fail in a number of cases:
@@ -630,7 +663,7 @@ getRealisedPackages2( nix::ref<nix::EvalState> &              state,
    * */
   debugLog( "getting outPath for " + packageName );
   auto parentOutpath
-    = tryEvalPath( state, packageName, system, cursor, "outPath" );
+    = tryEvalPath( state, packageName, system, cursor, isUnfree, "outPath" );
   if ( ! parentOutpath.has_value() )
     {
       throw PackageEvalFailure( "package '" + packageName + "' had no output" );
