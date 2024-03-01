@@ -49,18 +49,19 @@ unsupportedPackage( const std::string & system )
 /* -------------------------------------------------------------------------- */
 
 bool
-test_tryEvalPathReturnsValidOutpath( nix::ref<nix::EvalState> & state,
-                                     const std::string &        system )
+test_tryEvaluatePackageOutPathReturnsValidOutpath(
+  nix::ref<nix::EvalState> & state,
+  const std::string &        system )
 {
   auto pkg    = "ripgrep";
   auto cursor = cursorForPackageName( state, system, pkg );
-  auto path   = flox::buildenv::tryEvalPath( state,
-                                           pkg,
-                                           system,
-                                           cursor,
-                                           false,
-                                           "outPath" );
-  return path.has_value();
+  auto path
+    = flox::buildenv::tryEvaluatePackageOutPath( state, pkg, system, cursor
+
+    );
+  auto storePath = state->store->maybeParseStorePath( path );
+
+  return storePath.has_value();
 }
 
 
@@ -74,12 +75,10 @@ test_evalFailureForInsecurePackage( nix::ref<nix::EvalState> & state,
   auto cursor = cursorForPackageName( state, system, pkg );
   try
     {
-      auto path = flox::buildenv::tryEvalPath( state,
-                                               pkg,
-                                               system,
-                                               cursor,
-                                               false,
-                                               "outPath" );
+      auto path = flox::buildenv::tryEvaluatePackageOutPath( state,
+                                                             pkg,
+                                                             system,
+                                                             cursor );
       return false;
     }
   catch ( const flox::buildenv::PackageEvalFailure & )
@@ -104,12 +103,10 @@ test_unsupportedSystemExceptionForUnsupportedPackage(
   auto cursor = cursorForPackageName( state, system, pkg );
   try
     {
-      auto path = flox::buildenv::tryEvalPath( state,
-                                               pkg,
-                                               system,
-                                               cursor,
-                                               false,
-                                               "outPath" );
+      auto path = flox::buildenv::tryEvaluatePackageOutPath( state,
+                                                             pkg,
+                                                             system,
+                                                             cursor );
       return false;
     }
   catch ( const flox::buildenv::PackageUnsupportedSystem & )
@@ -143,7 +140,7 @@ main( int argc, char * argv[] )
 
   std::string system = nix::nativeSystem;
 
-  RUN_TEST( tryEvalPathReturnsValidOutpath, state, system );
+  RUN_TEST( tryEvaluatePackageOutPathReturnsValidOutpath, state, system );
   RUN_TEST( evalFailureForInsecurePackage, state, system );
   RUN_TEST( unsupportedSystemExceptionForUnsupportedPackage, state, system );
 

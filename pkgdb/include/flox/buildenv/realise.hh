@@ -186,21 +186,18 @@ getOutputsOutpaths( nix::ref<nix::EvalState> &              state,
 /**
  * @brief Catch evaluation errors for `outPath` and `drvPath` due to unfree
  * packages, etc.
+ * @param state A nix evaluator.
  * @param packageName The name of the package being queried (for the error
  * message).
  * @param system The user's system type (for the error message).
  * @param pkgCursor A @a nix::eval_cache::AttrCursor pointing at a package.
- * @param attr The name of the attribute to get.
- * @return The @a std::string of the requested store path, or @a std::nullopt if
- * the cursor didn't point to an attrset.
+ * @return The @a std::string of the requested store path
  */
-std::optional<std::string>
-tryEvalPath( nix::ref<nix::EvalState> &              state,
-             const std::string &                     packageName,
-             const std::string &                     system,
-             nix::ref<nix::eval_cache::AttrCursor> & cursor,
-             const bool                              isUnfree,
-             const std::string &                     attr );
+std::string
+tryEvaluatePackageOutPath( nix::ref<nix::EvalState> &              state,
+                           const std::string &                     packageName,
+                           const std::string &                     system,
+                           nix::ref<nix::eval_cache::AttrCursor> & cursor );
 
 
 /* -------------------------------------------------------------------------- */
@@ -284,16 +281,13 @@ ensurePackageIsAllowed( nix::ref<nix::EvalState> &              state,
  * @param packageName The name of the package whose outputs are being processed.
  * @param lockedPackage The locked package from the lockfile.
  * @param system The current system.
- * @param allows A set of options for which packages should be allowed in the
- * environment.
  * @return The list of packages generated from the locked package.
  */
 std::vector<std::pair<buildenv::RealisedPackage, nix::StorePath>>
-getRealisedPackages2( nix::ref<nix::EvalState> &              state,
-                      const std::string &                     packageName,
-                      const resolver::LockedPackageRaw &      lockedPackage,
-                      const System &                          system,
-                      const flox::resolver::Options::Allows & allows );
+getRealisedPackages( nix::ref<nix::EvalState> &         state,
+                     const std::string &                packageName,
+                     const resolver::LockedPackageRaw & lockedPackage,
+                     const System &                     system );
 
 
 /* -------------------------------------------------------------------------- */

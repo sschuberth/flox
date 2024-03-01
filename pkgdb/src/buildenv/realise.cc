@@ -170,41 +170,6 @@ createEnvironmentStorePath(
 
 /* -------------------------------------------------------------------------- */
 
-static nix::Attr
-extractAttrPath( nix::EvalState &       state,
-                 nix::Value &           vFlake,
-                 const flox::AttrPath & attrPath )
-{
-  state.forceAttrs( vFlake, nix::noPos, "while parsing flake" );
-
-
-  auto * output = vFlake.attrs->get( state.symbols.create( "outputs" ) );
-
-  for ( auto attrName : attrPath )
-    {
-      state.forceAttrs( *output->value,
-                        output->pos,
-                        "while parsing cached flake data" );
-
-      auto * next
-        = output->value->attrs->get( state.symbols.create( attrName ) );
-
-      if ( next == nullptr )
-        {
-          std::ostringstream str;
-          output->value->print( state.symbols, str );
-          throw FloxException( "attribute '%s' not found in set '%s'",
-                               attrName,
-                               str.str() );
-        }
-      output = next;
-    }
-
-  return *output;
-}
-
-/* -------------------------------------------------------------------------- */
-
 /**
  * @brief Extract locked packages from the lockfile for the given system.
  * @throws @a SystemNotSupportedByLockfile exception if the lockfile does not
@@ -246,6 +211,8 @@ maybeGetCursor( nix::ref<nix::EvalState> &              state,
                 nix::ref<nix::eval_cache::AttrCursor> & cursor,
                 const std::string &                     attr )
 {
+  debugLog(
+    nix::fmt( "getting attr cursor '%s.%s", cursor->getAttrPathStr(), attr ) );
   auto symbol      = state->symbols.create( attr );
   auto maybeCursor = cursor->maybeGetAttr( symbol, true );
   if ( maybeCursor == nullptr ) { return std::nullopt; }
@@ -269,7 +236,7 @@ getPackageCursor( nix::ref<nix::EvalState> &      state,
   std::vector<std::string> seen;
   for ( auto attrName : attrpath )
     {
-      seen.push_back( attrName );
+
       if ( auto maybeCursor = maybeGetCursor( state, cursor, attrName );
            maybeCursor.has_value() )
         {
@@ -279,8 +246,9 @@ getPackageCursor( nix::ref<nix::EvalState> &      state,
         {
           debugLog( "failed to get package cursor" );
           throw PackageEvalFailure(
-            nix::fmt( "failed to evaluate attribute '%s'",
-                      flox::concatStringsSep( ".", seen ) ) );
+            nix::fmt( "failed to evaluate attribute '%s.%s'",
+                      cursor->getAttrPathStr(),
+                      attrName ) );
         }
     }
   return cursor;
@@ -294,6 +262,8 @@ maybeGetStringAttr( nix::ref<nix::EvalState> &              state,
                     nix::ref<nix::eval_cache::AttrCursor> & cursor,
                     const std::string &                     attr )
 {
+  debugLog(
+    nix::fmt( "getting string attr '%s.%s", cursor->getAttrPathStr(), attr ) );
   auto maybeCursor = maybeGetCursor( state, cursor, attr );
   if ( ! maybeCursor.has_value() ) { return std::nullopt; }
   auto str = ( *maybeCursor )->getString();
@@ -308,6 +278,9 @@ maybeGetStringListAttr( nix::ref<nix::EvalState> &              state,
                         nix::ref<nix::eval_cache::AttrCursor> & cursor,
                         const std::string &                     attr )
 {
+  debugLog( nix::fmt( "getting string list attr '%s.%s",
+                      cursor->getAttrPathStr(),
+                      attr ) );
   auto maybeCursor = maybeGetCursor( state, cursor, attr );
   if ( ! maybeCursor.has_value() ) { return std::nullopt; }
   auto strs = ( *maybeCursor )->getListOfStrings();
@@ -322,6 +295,8 @@ maybeGetBoolAttr( nix::ref<nix::EvalState> &              state,
                   nix::ref<nix::eval_cache::AttrCursor> & cursor,
                   const std::string &                     attr )
 {
+  debugLog(
+    nix::fmt( "getting bool attr '%s.%s", cursor->getAttrPathStr(), attr ) );
   auto maybeCursor = maybeGetCursor( state, cursor, attr );
   if ( ! maybeCursor.has_value() ) { return std::nullopt; }
   auto b = ( *maybeCursor )->getBool();
@@ -339,20 +314,29 @@ getOutputsOutpaths( nix::ref<nix::EvalState> &              state,
   std::unordered_map<std::string, std::string> outpaths;
   for ( const auto & outputName : names )
     {
+      debugLog( nix::fmt( "getting output attr '%s.%s",
+                          pkgCursor->getAttrPathStr(),
+                          outputName ) );
+
+
+      // cursor to `<pkg>.${outputName}`
       auto maybeCursor = maybeGetCursor( state, pkgCursor, outputName );
-      if ( maybeCursor == std::nullopt )
+      if ( ! maybeCursor.has_value() )
         {
           OutputsOrMissingOutput missing = outputName;
           return missing;
         }
-      auto outputCursor = *maybeCursor;
+
+      // cursor to `<pkg>.${outputName}.outPath`
       auto maybeStorePath
-        = maybeGetStringAttr( state, outputCursor, "outPath" );
+        = maybeGetStringAttr( state, *maybeCursor, "outPath" );
+
       if ( maybeStorePath == std::nullopt )
         {
           OutputsOrMissingOutput missing = outputName + ".outPath";
           return missing;
         }
+
       outpaths[outputName] = *maybeStorePath;
     }
   return outpaths;
@@ -361,73 +345,28 @@ getOutputsOutpaths( nix::ref<nix::EvalState> &              state,
 
 /* -------------------------------------------------------------------------- */
 
-/**
- * @brief Tries to evaluate the path without using the eval cache. This is
- * necessary for
- */
-std::optional<std::string>
-tryEvalPathFullEval( nix::ref<nix::EvalState> &              state,
-                     const std::string &                     packageName,
-                     const std::string &                     system,
-                     nix::ref<nix::eval_cache::AttrCursor> & cursor,
-                     const std::string &                     attr )
+std::string
+tryEvaluatePackageOutPath( nix::ref<nix::EvalState> &              state,
+                           const std::string &                     packageName,
+                           const std::string &                     system,
+                           nix::ref<nix::eval_cache::AttrCursor> & cursor )
 {
-  /* This does a full eval (i.e. doesn't use the cache) in a way that gives us a
-   * more specific error message. */
-  auto maybeCursor = maybeGetCursor( state, cursor, attr );
-  if ( maybeCursor == std::nullopt ) { return std::nullopt; }
   try
     {
-      /* Guaranteed to fail */
-      ( *maybeCursor )->forceValue();
-      return std::nullopt;  // just to make the compiler shut up
-    }
-  catch ( const nix::Error & e )
-    {
-      /* "not available on the requested hostPlatform" -> package isn't
-       * supported on this system */
-      if ( e.info().msg.str().find(
-             "is not available on the requested hostPlatform:" )
-           != std::string::npos )
-        {
-          throw PackageUnsupportedSystem(
-            nix::fmt( "package '%s' is not avatlable for this system ('%s')",
-                      packageName,
-                      system ),
-            nix::filterANSIEscapes( e.what(), true ) );
-        }
-      debugLog( "failed to get more information about eval failure" );
-      throw PackageEvalFailure(
-        nix::fmt( "package '%s' failed to evaluate ", packageName ),
-        e.info().msg.str() );
-    }
-}
+      debugLog( nix::fmt( "trying to get outPath for '%s.outPath'",
+                          cursor->getAttrPathStr() ) );
 
-std::optional<std::string>
-tryEvalPath( nix::ref<nix::EvalState> &              state,
-             const std::string &                     packageName,
-             const std::string &                     system,
-             nix::ref<nix::eval_cache::AttrCursor> & cursor,
-             const bool                              isUnfree,
-             const std::string &                     attr )
-{
-  /* Unfree packages aren't cached, so we always have to do a full eval. */
-  if ( isUnfree )
-    {
-      return tryEvalPathFullEval( state, packageName, system, cursor, attr );
+      auto result = maybeGetStringAttr( state, cursor, "outPath" );
+      if ( result.has_value() ) { return *result; }
+      throw PackageEvalFailure( "package '" + packageName
+                                + "' had no outPath" );
     }
-  /* Happy path: the attribute is cached */
-  try
-    {
-      auto result = maybeGetStringAttr( state, cursor, attr );
-      return result;
-    }
-  /* First step down the unhappy path: we get an error and we use the text of
-   * the error message to determine which type of error it was. */
   catch ( const nix::Error & e )
     {
-      /* "not available on the requested hostPlatform" -> package isn't
-       * supported on this system */
+      /**
+       * "not available on the requested hostPlatform"
+       *   -> package isn't supported on this system
+       */
       debugLog( "failed to get outPath: " + std::string( e.what() ) );
       if ( e.info().msg.str().find(
              "is not available on the requested hostPlatform:" )
@@ -441,21 +380,41 @@ tryEvalPath( nix::ref<nix::EvalState> &              state,
 
             nix::filterANSIEscapes( e.what(), true ) );
         }
-      /* "<attr> is not a string" -> could be a number of different
-       * errors, we'll have to use another eval method in order to get more
-       * information. */
-      else if ( e.info().msg.str().find( "is not a string" )
-                == std::string::npos )
+
+      /**
+       * eval errors are cached without the eror trace
+       * force an impure eval to get the full error message
+       */
+      try
         {
-          debugLog( "failed to get the cached attr" );
-          throw PackageEvalFailure( "package '" + packageName
-                                      + "' failed to evaluate",
-                                    e.info().msg.str() );
+          debugLog(
+            "evaluating outPath uncached to get full error message" ) auto
+            vPackage
+            = cursor->forceValue();
+          state->forceAttrs( vPackage, nix::noPos, "while evaluating package" );
+          // expected to fail
+          auto aOutPath
+            = vPackage.attrs->get( state->symbols.create( "outPath" ) );
+          state->forceString( *aOutPath->value,
+                              aOutPath->pos,
+                              "while evaluating outPath" );
+          /**
+           * this should only be reachable if we have a cached eval failure,
+           * that evaluates successfully at a later time.
+           * Since eval checks for nixpkgs are disabled through the
+           * `flox-nixpkgs` fetcher which upon change will observe a different
+           * fingerprint, i.e. fresh cache, this is rather unlikely.
+           */
+          debugLog( "evaluation was expected to fail, but was successful" );
+          return aOutPath->value->string.s;
+        }
+      catch ( const nix::Error & e )
+        {
+          throw PackageEvalFailure(
+            nix::fmt( "package '%s' failed to evaluate", packageName ),
+            e.info().msg.str() );
         }
     }
-  /* The method we use for full eval gives us more information the error
-   * messages. */
-  return tryEvalPathFullEval( state, packageName, system, cursor, attr );
 }
 
 
@@ -466,10 +425,18 @@ evalCacheCursorForInput( nix::ref<nix::EvalState> &             state,
                          const flox::resolver::LockedInputRaw & input,
                          const flox::AttrPath &                 attrPath )
 {
-  auto packageInputRef = nix::FlakeRef( input );
+
+  /**
+   * Ensure the input is fetched with `flox-nixpkgs`.
+   * Currently, the 'flox-nixpkgs' fetcher requires the original input to be
+   * a rev or ref of `github:nixos/nixpkgs`.
+   */
+  auto floxNixpkgsAttrs = flox::githubAttrsToFloxNixpkgsAttrs( input.attrs );
+  auto packageInputRef  = nix::FlakeRef::fromAttrs( floxNixpkgsAttrs );
 
   auto packageFlake
     = flox::lockFlake( *state, packageInputRef, nix::flake::LockFlags {} );
+
   auto cursor = getPackageCursor( state, packageFlake, attrPath );
   return cursor;
 }
@@ -483,6 +450,8 @@ outpathsForPackageOutputs( nix::ref<nix::EvalState> &              state,
                            nix::ref<nix::eval_cache::AttrCursor> & pkgCursor )
 {
   debugLog( "getting outputs for " + packageName );
+
+  // get `<pkg>.outputs`
   auto outputNames = maybeGetStringListAttr( state, pkgCursor, "outputs" );
   if ( ! ( outputNames.has_value() ) )
     {
@@ -494,8 +463,10 @@ outpathsForPackageOutputs( nix::ref<nix::EvalState> &              state,
                       packageName ) );
 
   debugLog( "getting outPaths for outputs of " + packageName );
+
   auto maybeOutputsToOutpaths
     = getOutputsOutpaths( state, pkgCursor, *outputNames );
+
   if ( std::holds_alternative<std::string>( maybeOutputsToOutpaths ) )
     {
       auto missingOutput = std::get<std::string>( maybeOutputsToOutpaths );
@@ -540,120 +511,16 @@ collectRealisedPackages(
 
 /* -------------------------------------------------------------------------- */
 
-bool
-ensurePackageIsAllowed( nix::ref<nix::EvalState> &              state,
-                        nix::ref<nix::eval_cache::AttrCursor> & cursor,
-                        const std::string &                     packageName,
-                        const flox::resolver::Options::Allows & allows )
-{
-  /* Get the `meta` attrset so we can check whether the package is allowed. */
-  auto maybeMetaAttrs = maybeGetCursor( state, cursor, "meta" );
-  if ( ! maybeMetaAttrs.has_value() )
-    {
-      throw PackageEvalFailure( "package '" + packageName
-                                + "' had no metadata" );
-    }
-  auto metaCursor = *maybeMetaAttrs;
-
-  bool isBroken;
-  bool defaultIsBroken        = false;
-  bool defaultIsBrokenAllowed = false;
-  try
-    {
-      auto maybeIsBroken = maybeGetBoolAttr( state, metaCursor, "broken" );
-      if ( ! maybeIsBroken.has_value() )
-        {
-          debugLog( "package had no 'broken' attribute, using default: default="
-                    + std::to_string( defaultIsBroken ) );
-          isBroken = defaultIsBroken;
-        }
-      else { isBroken = *maybeIsBroken; }
-    }
-  catch ( const nix::Error & e )
-    {
-      debugLog( "package had no 'broken' attribute, using default: default="
-                + std::to_string( defaultIsBroken ) );
-      isBroken = defaultIsBroken;
-    }
-  auto brokenAllowed = allows.broken.value_or( defaultIsBrokenAllowed );
-  if ( isBroken && ! brokenAllowed )
-    {
-      debugLog( "package is not allowed: is_broken="
-                + std::to_string( isBroken )
-                + ", broken_allowed=" + std::to_string( brokenAllowed ) );
-      throw PackageEvalFailure(
-        nix::fmt( "Package '%s' is marked as unfree.\n\n"
-                  "Allow building unfree packages by setting "
-                  "'options.allow.unfree = true' in manifest.toml",
-                  packageName ) );
-    }
-
-  bool               isUnfree;
-  bool               defaultisUnfree        = true;
-  bool               defaultIsUnfreeAllowed = false;
-  PackageEvalFailure unfreeException(
-    nix::fmt( "Package '%s' is marked as unfree.\n\n"
-              "Allow building unfree packages by setting "
-              "'options.allow.unfree = true' in manifest.toml",
-              packageName ) );
-  try
-    {
-      debugLog( "getting 'unfree' attr" );
-      auto maybeisUnfree = maybeGetBoolAttr( state, metaCursor, "unfree" );
-      if ( ! maybeisUnfree.has_value() )
-        {
-          debugLog( "package had no 'unfree' attribute, using default: default="
-                    + std::to_string( defaultisUnfree ) );
-          isUnfree = defaultisUnfree;
-        }
-      else
-        {
-          debugLog( "using cached 'unfree' value" );
-          isUnfree = *maybeisUnfree;
-        }
-    }
-  catch ( const nix::Error & e )
-    {
-      if ( e.info().msg.str().find( "has an unfree license" )
-           != std::string::npos )
-        {
-          debugLog( "throwing unfree exception" );
-          throw unfreeException;
-        }
-      debugLog( "package had no 'unfree' attribute, using default: default="
-                + std::to_string( defaultisUnfree ) );
-      isUnfree = defaultisUnfree;
-    }
-  auto unfreeAllowed = allows.unfree.value_or( defaultIsUnfreeAllowed );
-  if ( isUnfree && ! unfreeAllowed )
-    {
-      debugLog( "package is not allowed: is_unfree="
-                + std::to_string( isUnfree )
-                + ", unfree_allowed=" + std::to_string( unfreeAllowed ) );
-      throw unfreeException;
-    }
-
-  return isUnfree;
-}
-
-
-/* -------------------------------------------------------------------------- */
-
 std::vector<std::pair<buildenv::RealisedPackage, nix::StorePath>>
-getRealisedPackages2( nix::ref<nix::EvalState> &              state,
-                      const std::string &                     packageName,
-                      const resolver::LockedPackageRaw &      lockedPackage,
-                      const System &                          system,
-                      const flox::resolver::Options::Allows & allows )
+getRealisedPackages( nix::ref<nix::EvalState> &         state,
+                     const std::string &                packageName,
+                     const resolver::LockedPackageRaw & lockedPackage,
+                     const System &                     system )
 {
   auto timeEvalStart = std::chrono::high_resolution_clock::now();
   auto cursor        = evalCacheCursorForInput( state,
                                          lockedPackage.input,
                                          lockedPackage.attrPath );
-
-  /* Don't proceed if the package doesn't meet the "allow" criteria. This *must*
-   * go before evaluating `outPath` in case the package isn't allowed.*/
-  auto isUnfree = ensurePackageIsAllowed( state, cursor, packageName, allows );
 
   /* Try to eval the outPath. Trying this eval tells us whether the package is
    * unsupported. This eval will fail in a number of cases:
@@ -661,32 +528,65 @@ getRealisedPackages2( nix::ref<nix::EvalState> &              state,
    * - The package is marked "insecure" i.e. it's old (e.g. Python 2)
    * - Possibly other cases as well
    * */
-  debugLog( "getting outPath for " + packageName );
-  auto parentOutpath
-    = tryEvalPath( state, packageName, system, cursor, isUnfree, "outPath" );
-  if ( ! parentOutpath.has_value() )
-    {
-      throw PackageEvalFailure( "package '" + packageName + "' had no output" );
-    }
 
-  /* Collect the store paths for each output of the package. Note that the "out"
-   * output is the same as the package's outPath. */
+  // uses the cached value
+  auto parentOutpath
+    = tryEvaluatePackageOutPath( state, packageName, system, cursor );
+
+  // auto parentOutpath
+  // = tryEvalPath( state, packageName, system, cursor, isUnfree, "outPath" );
+
+  /**
+   * Collect the store paths for each output of the package.
+   * Note that the "out" output is the same as the package's outPath.
+   */
   auto outputsToOutpaths
     = outpathsForPackageOutputs( state, packageName, cursor );
+
+
   auto pkgs        = collectRealisedPackages( state,
                                        packageName,
                                        lockedPackage,
-                                       *parentOutpath,
+                                       parentOutpath,
                                        outputsToOutpaths );
   auto timeEvalEnd = std::chrono::high_resolution_clock::now();
 
-  /* Make sure each store path is built. */
+  bool allValid = true;
   for ( const auto & [pkg, outPath] : pkgs )
     {
-      debugLog( "ensuring store path is built: path="
-                + state->store->printStorePath( outPath ) );
-      state->store->ensurePath( outPath );
+      try
+        {
+          state->store->ensurePath( outPath );
+        }
+      catch ( const nix::Error & e )
+        {
+          debugLog( "failed to ensure path: " + std::string( e.what() ) );
+          allValid = false;
+          break;  // no need to check the rest if any output is not
+                  // substitutable
+        }
     }
+
+  // one or more outputs are not substitutable
+  // we need to build the derivation to get all outputs
+  if ( ! allValid )
+    {
+      auto drvPath = cursor->forceDerivation();
+      try
+        {
+          auto storePathWithOutputs = nix::StorePathWithOutputs { drvPath, {} };
+          state->store->buildPaths(
+            nix::toDerivedPaths( { storePathWithOutputs } ) );
+        }
+      catch ( const nix::Error & e )
+        {
+          throw PackageBuildFailure( "Failed to build package '" + packageName
+                                       + "'",
+                                     nix::filterANSIEscapes( e.what(), true ) );
+        }
+    }
+
+
   auto timeBuildEnd = std::chrono::high_resolution_clock::now();
 
   /* Report some timings for diagnostics */
@@ -703,161 +603,6 @@ getRealisedPackages2( nix::ref<nix::EvalState> &              state,
   return pkgs;
 }
 
-
-/* -------------------------------------------------------------------------- */
-
-/**
- * @brief Realise a locked package into a list of realised packages and store
- * paths.
- * Builds the derivation of the package and creates a @a RealisedPackage for
- * each output.
- * @param state Nix state.
- * @param pId Package id from the lockfile (used to inform build error message).
- * @param package Locked package to realise.
- * @param system System to realise the package for. (used to inform build error
- * message).
- * @return List of realised packages and their store paths for referencing.
- * @throws PackageEvalFailure if the package fails to evaluate.
- * @throws PackageEvalFailure if the package is marked as broken or unfree and
- * neither is allowed through the options.
- * @throws PackageBuildFailure if the package fails to build.
- * @throws PackageUnsupportedSystem if the package is not available for the
- given system.
- */
-static std::vector<std::pair<buildenv::RealisedPackage, nix::StorePath>>
-getRealisedPackages( nix::EvalState &                        state,
-                     const std::string &                     pId,
-                     const resolver::LockedPackageRaw &      package,
-                     const System &                          system,
-                     const flox::resolver::Options::Allows & allows )
-{
-  std::vector<std::pair<buildenv::RealisedPackage, nix::StorePath>> realised;
-
-
-  /**
-   * Ensure the input is fetched with `flox-nixpkgs`.
-   * Currently, the 'flox-nixpkgs' fetcher requires the original input to be
-   * a rev or ref of `github:nixos/nixpkgs`.
-   */
-  auto floxNixpkgsAttrs
-    = flox::githubAttrsToFloxNixpkgsAttrs( package.input.attrs );
-  auto packageInputRef = nix::FlakeRef::fromAttrs( floxNixpkgsAttrs );
-
-  auto packageFlake
-    = flox::lockFlake( state, packageInputRef, nix::flake::LockFlags {} );
-
-  auto * vFlake = state.allocValue();
-  nix::flake::callFlake( state, packageFlake, *vFlake );
-
-  /* Get referenced output. */
-  auto output = extractAttrPath( state, *vFlake, package.attrPath );
-
-  /* Interpret output as derivation. */
-  debugLog( nix::fmt( "getting derivation for %s",
-                      packageFlake.flake.lockedRef.to_string() ) );
-  auto package_drv = getDerivation( state, *output.value, false );
-
-  if ( ! package_drv.has_value() )
-    {
-      throw PackageEvalFailure( "Failed to get derivation for package '"
-                                + nlohmann::json( package ).dump() + "'" );
-    }
-
-  debugLog( "getting store path for derivation" );
-  auto broken = package_drv->queryMetaBool( "broken", false );
-  if ( broken && ! allows.broken.value_or( false ) )
-    {
-      throw PackageEvalFailure(
-        nix::fmt( "Package '%s' is marked as broken.\n\n"
-                  "Allow building broken packages by setting "
-                  "'options.allow.broken = true' in manifest.toml",
-                  pId ) );
-    }
-
-  // if the package does not have an `unfree` attribute,
-  // assume it is unfree.
-  // Generally, nixpkgs packages _will_ have this attribute set.
-  // However, if it is missing it is safer to assume it is unfree.
-  auto unfree = package_drv->queryMetaBool( "unfree", true );
-  if ( unfree && ! allows.unfree.value_or( false ) )
-    {
-      throw PackageEvalFailure(
-        nix::fmt( "Package '%s' is marked as unfree.\n\n"
-                  "Allow building unfree packages by setting "
-                  "'options.allow.unfree = true' in manifest.toml",
-                  pId ) );
-    }
-
-  std::string packagePath;
-  try
-    {
-      packagePath = state.store->printStorePath( package_drv->queryOutPath() );
-      debugLog( nix::fmt( "found store path: path=%s", packagePath ) );
-    }
-  catch ( const nix::Error & e )
-    {
-
-      if ( e.info().msg.str().find(
-             "is not available on the requested hostPlatform:" )
-           != std::string::npos )
-        {
-          throw PackageUnsupportedSystem(
-            nix::fmt( "package '%s' is not available for this system ('%s')",
-                      pId,
-                      system ),
-
-            nix::filterANSIEscapes( e.what(), true ) );
-        }
-
-      // rethrow the original root cause without the nix trace
-      throw PackageEvalFailure(
-        nix::fmt( "package '%s' failed to evaluate", pId ),
-        e.info().msg.str() );
-    };
-
-
-  /* Collect all outputs to include in the environment.
-   *
-   * Set the priority of the outputs to the priority of the package
-   * and the internal priority to the index of the output.
-   * This way `buildenv::buildEnvironment` can resolve conflicts between
-   * outputs of the same derivation. */
-  for ( auto [idx, output] : enumerate( package_drv->queryOutputs() ) )
-    {
-      /* Skip outputs without path */
-      if ( ! output.second.has_value() ) { continue; }
-      RealisedPackage realisedPackage(
-        state.store->printStorePath( output.second.value() ),
-        true,
-        buildenv::Priority( package.priority,
-                            packagePath,
-                            /* idx should always fit in uint its unlikely a
-                             * package has more than 4 billion outputs. */
-                            static_cast<unsigned>( idx ) ) );
-      realised.emplace_back( realisedPackage, output.second.value() );
-    }
-
-  /* Build the derivation */
-  if ( auto drvPath = package_drv->queryDrvPath() )
-    {
-      /* Build derivation of pacakge in environment,
-       * rethrow errors as PackageBuildFailure. */
-      try
-        {
-          auto storePathWithOutputs
-            = nix::StorePathWithOutputs { *drvPath, {} };
-          state.store->buildPaths(
-            nix::toDerivedPaths( { storePathWithOutputs } ) );
-        }
-      catch ( const nix::Error & e )
-        {
-          throw PackageBuildFailure( "Failed to build package '" + pId + "'",
-                                     nix::filterANSIEscapes( e.what(), true ) );
-        }
-    }
-
-  return realised;
-}
 
 /* -------------------------------------------------------------------------- */
 
@@ -1015,11 +760,6 @@ createFloxEnv( nix::ref<nix::EvalState> & state,
 {
   auto locked_packages = getLockedPackages( lockfile, system );
 
-  auto allows = lockfile.getManifestRaw()
-                  .options.value_or( flox::resolver::Options {} )
-                  .allow.value_or( flox::resolver::Options::Allows {} );
-
-
   /* Extract derivations */
   nix::StorePathSet            references;
   std::vector<RealisedPackage> pkgs;
@@ -1028,8 +768,7 @@ createFloxEnv( nix::ref<nix::EvalState> & state,
 
   for ( auto const & [pId, package] : locked_packages )
     {
-      auto realised
-        = getRealisedPackages2( state, pId, package, system, allows );
+      auto realised = getRealisedPackages( state, pId, package, system );
       for ( auto [realisedPackage, output] : realised )
         {
           pkgs.push_back( realisedPackage );
