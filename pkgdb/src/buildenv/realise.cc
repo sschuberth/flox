@@ -606,6 +606,49 @@ getRealisedPackages( nix::ref<nix::EvalState> &         state,
 
 /* -------------------------------------------------------------------------- */
 
+void
+addScriptToScriptsDir( const std::string &           scriptContents,
+                       const std::filesystem::path & scriptsDir,
+                       const std::string &           scriptName,
+                       std::stringstream & mainActivationScriptContents,
+                       const bool          shouldSource )
+{
+  /* Ensure that the "activate" subdirectory exists */
+  std::filesystem::create_directories( scriptsDir / ACTIVATION_SUBDIR_NAME );
+  std::filesystem::path scriptPath( nix::createTempFile().second );
+  debugLog(
+    nix::fmt( "created tempfile for activation script: script=%s, path=%s",
+              scriptName,
+              scriptPath ) );
+  std::ofstream scriptTmpFile( scriptPath );
+  scriptTmpFile << scriptContents;
+  scriptTmpFile.close();
+  std::filesystem::copy_file( scriptPath,
+                              scriptsDir / ACTIVATION_SUBDIR_NAME
+                                / scriptName );
+  std::filesystem::permissions( scriptsDir / ACTIVATION_SUBDIR_NAME
+                                  / scriptName,
+                                std::filesystem::perms::owner_exec,
+                                std::filesystem::perm_options::add );
+  auto scriptRelativePath
+    = nix::fmt( "\"$FLOX_ENV/%s/%s\"", ACTIVATION_SUBDIR_NAME, scriptName );
+  if ( shouldSource )
+    {
+      mainActivationScriptContents << "source " << scriptRelativePath << '\n';
+    }
+  else
+    {
+      mainActivationScriptContents << "bash " << scriptRelativePath << '\n';
+    }
+}
+
+// Integration tests:
+// TODO: create a directory in the hook, see if it gets created
+// TODO: set an env var, see if it's inherited in the subshell
+// TODO: make sure the subshell can't set environment variables outside of it
+
+/* -------------------------------------------------------------------------- */
+
 /**
  * @brief Make a @a RealisedPackage and store path for the activation scripts.
  * The package contains the activation scripts for *bash* and *zsh*.
@@ -651,32 +694,23 @@ makeActivationScripts( nix::EvalState & state, resolver::Lockfile & lockfile )
         }
     }
 
-  /* Add hook script.
-   * Write hook script to a temporary file and copy it to the environment.
-   * Add source command to the activate script. */
-  if ( auto hookScript = lockfile.getManifest().getManifestRaw().hook )
+  /* Add 'on-activate' script. */
+  auto hook = lockfile.getManifest().getManifestRaw().hook;
+  if ( hook->script.has_value() )
     {
-      nix::Path script_path;
-
-      /* Set script path to a temporary file. */
-      if ( auto script = hookScript->script )
-        {
-          script_path = nix::createTempFile().second;
-          std::ofstream file( script_path );
-          file << script.value();
-          file.close();
-        }
-
-      if ( ! script_path.empty() )
-        {
-
-          std::filesystem::copy_file( script_path,
-                                      tempDir / "activate" / "hook.sh" );
-          std::filesystem::permissions( tempDir / "activate" / "hook.sh",
-                                        std::filesystem::perms::owner_exec,
-                                        std::filesystem::perm_options::add );
-          commonActivate << "source \"$FLOX_ENV/activate/hook.sh\"" << '\n';
-        }
+      addScriptToScriptsDir( hook->script.value(),
+                             tempDir,
+                             "hook.sh",
+                             commonActivate,
+                             true );
+    }
+  else if ( hook->onActivate.has_value() )
+    {
+      addScriptToScriptsDir( hook->onActivate.value(),
+                             tempDir,
+                             "on-activate.sh",
+                             commonActivate,
+                             false );
     }
 
   /* Add bash activation script. */
