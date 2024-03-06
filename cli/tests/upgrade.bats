@@ -84,23 +84,24 @@ teardown() {
   assert_new_hello
 }
 
+# bats test_tags=bats:focus
 @test "upgrade by group" {
   rm -f "$GLOBAL_MANIFEST_LOCK"
 
-  "$FLOX_BIN" init
+  "$FLOX_BIN" init -vvvv
   cat << "EOF" > "$TMP_MANIFEST_PATH"
 [install]
 hello = { pkg-group = "blue" }
 EOF
 
   _PKGDB_GA_REGISTRY_REF_OR_REV="${PKGDB_NIXPKGS_REV_OLD?}" \
-    "$FLOX_BIN" edit -f "$TMP_MANIFEST_PATH"
+    "$FLOX_BIN" edit -f "$TMP_MANIFEST_PATH" -vvvv
 
   _PKGDB_GA_REGISTRY_REF_OR_REV="${PKGDB_NIXPKGS_REV_NEW?}" \
-    "$FLOX_BIN" update
+    "$FLOX_BIN" update -vvvv
   assert_old_hello
 
-  run "$FLOX_BIN" upgrade blue
+  run --separate-stderr "$FLOX_BIN" upgrade blue -vvvv
   assert_output --partial "Upgraded 'hello'"
   assert_new_hello
 }
