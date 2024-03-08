@@ -445,6 +445,13 @@ impl Activate {
     pub async fn handle(self, mut config: Config, flox: Flox) -> Result<()> {
         subcommand_metric!("activate");
 
+        if let Some(prompt_switch) = self.prompt_switch {
+            match prompt_switch {
+                PromptSwitch::Enable => config.flox.prompt_disable = false,
+                PromptSwitch::Disable => config.flox.prompt_disable = true,
+            }
+        }
+
         let mut concrete_environment = self.environment.to_concrete_environment(&flox)?;
 
         // TODO could move this to a pretty print method on the Environment trait?
@@ -603,6 +610,10 @@ impl Activate {
             ),
             ("FLOX_PROMPT_COLOR_1", prompt_color_1),
             ("FLOX_PROMPT_COLOR_2", prompt_color_2),
+            (
+                "FLOX_PROMPT_DISABLE",
+                config.flox.prompt_disable.to_string(),
+            ),
         ]);
 
         exports.extend(Self::default_subprocess_env_vars());
