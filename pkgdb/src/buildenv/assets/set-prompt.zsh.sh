@@ -5,7 +5,7 @@ _floxPrompt2="%F{$FLOX_PROMPT_COLOR_2}[$FLOX_PROMPT_ENVIRONMENTS]"
 _flox="%B${FLOX_PROMPT-$_floxPrompt1} ${_floxPrompt2}%f%b "
 
 
-if [ -n "$_flox" -a -n "${PS1:-}" ]
+if [ -n "$_flox" -a -n "${PS1:-}" -a "${FLOX_PROMPT_DISABLE:-}" != "true" ]
 then
     # Start by saving the original value of PS1.
     if [ -z "$FLOX_SAVE_PS1" ]; then
