@@ -14,6 +14,7 @@ use std::{env, vec};
 use anyhow::{anyhow, bail, Context, Result};
 use bpaf::Bpaf;
 use crossterm::tty::IsTty;
+use flox_rust_sdk::data::CanonicalPath;
 use flox_rust_sdk::flox::{EnvironmentName, EnvironmentOwner, EnvironmentRef, Flox};
 use flox_rust_sdk::models::environment::managed_environment::{
     ManagedEnvironment,
@@ -22,7 +23,6 @@ use flox_rust_sdk::models::environment::managed_environment::{
 };
 use flox_rust_sdk::models::environment::path_environment::{self};
 use flox_rust_sdk::models::environment::{
-    CanonicalPath,
     CoreEnvironmentError,
     EditResult,
     Environment,
