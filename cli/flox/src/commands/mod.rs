@@ -1,5 +1,6 @@
 mod auth;
 mod environment;
+mod envs;
 mod general;
 mod init;
 mod search;
@@ -483,6 +484,9 @@ enum AdditionalCommands {
     /// View and set configuration options
     #[bpaf(command, hide, footer("Run 'man flox-config' for more details."))]
     Config(#[bpaf(external(general::config_args))] general::ConfigArgs),
+
+    #[bpaf(command, hide, footer("Run 'man flox-envs' for more details."))]
+    Envs(#[bpaf(external(envs::envs))] envs::Envs),
 }
 
 impl AdditionalCommands {
