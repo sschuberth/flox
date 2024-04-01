@@ -173,6 +173,7 @@
       # Integration tests
       flox-tests = callPackage ./pkgs/flox-tests {};
       flox-tests-pure = callPackage ./pkgs/flox-tests-pure {inputs = inputs;};
+      flox-integ-tests-py = callPackage ./pkgs/flox-integ-tests-py {};
     };
 
     # Composes dependency overlays and the overlay defined here.

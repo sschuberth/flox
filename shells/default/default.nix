@@ -11,6 +11,7 @@
   flox-cli-tests,
   flox-pkgdb,
   flox-tests,
+  flox-integ-tests-py,
   ci ? false,
 }: let
   # For use in GitHub Actions and local development.
@@ -31,6 +32,7 @@
         FLOX_BIN = null;
         LD_FLOXLIB = null;
       })
+      flox-integ-tests-py
     ];
 
   devPackages =
